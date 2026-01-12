@@ -1,0 +1,17 @@
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.env
+.venv
+
+# Experiment generated data (timestamped run directories)
+experiments/*/[0-9]*_*/
+# Generated CSV and results files
+*_generated.csv
+results.json
+summary.csv
