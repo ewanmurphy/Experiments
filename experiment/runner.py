@@ -14,6 +14,7 @@ def run_experiment(
     params: Dict[str, Any],
     experiment_dir: Optional[str] = None,
     output_to_console: bool = True,
+    verbose: bool = False,
 ) -> int:
     """Run a Python experiment script with parameters.
 
@@ -23,6 +24,7 @@ def run_experiment(
         experiment_dir: Directory for this experiment. Logs will go into
                        experiment_dir/logs, and script will run from experiment_dir
         output_to_console: Whether to stream output to console
+        verbose: Whether to show detailed logging and metadata information
 
     Returns:
         Exit code from the experiment script
@@ -49,12 +51,13 @@ def run_experiment(
     logger = ExperimentLogger(log_dir=str(log_dir), script_name=script_file.name)
     logger.record_params(params)
 
-    typer.echo(f"Starting experiment: {script_file.name}")
-    if experiment_dir:
-        typer.echo(f"Experiment directory: {exp_dir}")
-    typer.echo(f"Log file: {logger.get_log_path()}")
-    typer.echo(f"Metadata file: {logger.get_metadata_path()}")
-    typer.echo("-" * 60)
+    if verbose:
+        typer.echo(f"Starting experiment: {script_file.name}")
+        if experiment_dir:
+            typer.echo(f"Experiment directory: {exp_dir}")
+        typer.echo(f"Log file: {logger.get_log_path()}")
+        typer.echo(f"Metadata file: {logger.get_metadata_path()}")
+        typer.echo("-" * 60)
 
     # Convert parameters to command-line arguments
     cmd = [sys.executable, str(script_file)]
@@ -89,7 +92,8 @@ def run_experiment(
     # Finalize logging
     logger.finalize(exit_code)
 
-    typer.echo("-" * 60)
-    typer.echo(f"Experiment completed with exit code: {exit_code}")
+    if verbose:
+        typer.echo("-" * 60)
+        typer.echo(f"Experiment completed with exit code: {exit_code}")
 
     return exit_code

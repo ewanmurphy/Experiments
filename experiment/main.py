@@ -2,11 +2,14 @@
 
 import csv
 import json
+import os
 import subprocess
 import sys
+import time
 from datetime import datetime
+from multiprocessing import Pool
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import typer
 from experiment import __version__
 from experiment.config import (
@@ -42,12 +45,13 @@ def get_available_experiments(experiments_dir: Path) -> List[str]:
     return sorted(experiments)
 
 
-def create_results_summary(run_dir: Path, experiments: List[dict]) -> None:
+def create_results_summary(run_dir: Path, experiments: List[dict], verbose: bool = False) -> None:
     """Create a summary CSV combining parameters and results.
 
     Args:
         run_dir: Path to the run directory
         experiments: List of parameter dictionaries for each experiment
+        verbose: Whether to show detailed output
     """
     summary = []
 
@@ -78,10 +82,11 @@ def create_results_summary(run_dir: Path, experiments: List[dict]) -> None:
             writer.writeheader()
             writer.writerows(summary)
 
-        typer.echo(f"Summary saved to: {summary_file}")
+        if verbose:
+            typer.echo(f"Summary saved to: {summary_file}")
 
 
-def run_post_processing(script_path: str, summary_csv_path: Path, run_dir: Path) -> None:
+def run_post_processing(script_path: str, summary_csv_path: Path, run_dir: Path, verbose: bool = False) -> None:
     """Run post-processing script with summary.csv as input.
 
     The post-processing script is called with the summary.csv path as its first argument.
@@ -102,11 +107,12 @@ def run_post_processing(script_path: str, summary_csv_path: Path, run_dir: Path)
         typer.echo(f"Warning: Post-processing script not found: {script_path}", err=True)
         return
 
-    typer.echo("-" * 60)
-    typer.echo("Running post-processing script...")
-    typer.echo(f"Script: {script_file}")
-    typer.echo(f"Input: {summary_csv_path}")
-    typer.echo(f"Output directory: {run_dir}")
+    if verbose:
+        typer.echo("-" * 60)
+        typer.echo("Running post-processing script...")
+        typer.echo(f"Script: {script_file}")
+        typer.echo(f"Input: {summary_csv_path}")
+        typer.echo(f"Output directory: {run_dir}")
 
     # Run post-processing script from the run directory
     cmd = [sys.executable, str(script_file), str(summary_csv_path)]
@@ -131,11 +137,25 @@ def run_post_processing(script_path: str, summary_csv_path: Path, run_dir: Path)
                 f"Warning: Post-processing script exited with code {exit_code}",
                 err=True,
             )
-        else:
+        elif verbose:
             typer.echo("Post-processing completed successfully")
 
     except Exception as e:
         typer.echo(f"Warning: Error running post-processing script: {e}", err=True)
+
+
+def _run_experiment_worker(args: Tuple) -> Tuple[int, int]:
+    """Worker function for parallel experiment execution.
+
+    Args:
+        args: Tuple of (experiment_index, script_path, params, exp_subdir, verbose)
+
+    Returns:
+        Tuple of (experiment_index, exit_code)
+    """
+    exp_index, script_path, params, exp_subdir, verbose = args
+    exit_code = run_experiment(str(script_path), params, experiment_dir=str(exp_subdir), output_to_console=False, verbose=verbose)
+    return (exp_index, exit_code)
 
 
 @app.command()
@@ -144,6 +164,9 @@ def run(
     param: Optional[List[str]] = typer.Option(
         None, "--param", "-p", help="Parameter override (key=value)"
     ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed logging and metadata information"),
+    parallel: int = typer.Option(1, "--parallel", "-n", help="Number of parallel workers (1 for sequential, 0 for auto-detect leaving 2 cores free)"),
+    timing: bool = typer.Option(True, "--timing/--no-timing", help="Show total execution time"),
 ) -> None:
     """Run an experiment by name or interactive selection.
 
@@ -153,6 +176,7 @@ def run(
 
     Creates a timestamped directory for logs and outputs.
     """
+    start_time = time.time()
     try:
         # Find experiments directory
         cwd = Path.cwd()
@@ -225,37 +249,76 @@ def run(
 
         # Load experiments from CSV
         experiments = load_csv(str(csv_in_run))
-        typer.echo(f"Running {len(experiments)} experiments for '{experiment_name}'")
-        typer.echo(f"Results directory: {run_dir}")
-        typer.echo("-" * 60)
+        if verbose:
+            typer.echo(f"Running {len(experiments)} experiments for '{experiment_name}'")
+            typer.echo(f"Results directory: {run_dir}")
+            typer.echo("-" * 60)
+
+        # Determine number of workers
+        num_workers = parallel
+        if num_workers == 0:
+            num_workers = max(1, (os.cpu_count() or 1) - 2)
+
+        if verbose:
+            typer.echo(f"Using {num_workers} worker(s) for execution")
 
         failed = 0
-        for i, params in enumerate(experiments, 1):
-            typer.echo(f"\n[{i}/{len(experiments)}] Running experiment...")
 
+        # Prepare experiment arguments
+        exp_args = []
+        for i, params in enumerate(experiments, 1):
             # Merge CLI parameter overrides
             if param:
                 params = merge_params(params, param)
 
-            # Run the experiment from the run directory
             exp_subdir = run_dir / f"exp_{i:03d}"
-            exit_code = run_experiment(str(script_path), params, experiment_dir=str(exp_subdir))
-            if exit_code != 0:
-                failed += 1
+            exp_args.append((i, script_path, params, exp_subdir, verbose))
+
+        if num_workers > 1:
+            # Parallel execution
+            typer.echo(f"Running {len(experiments)} experiments in parallel ({num_workers} workers)...")
+            with Pool(num_workers) as pool:
+                results = pool.map(_run_experiment_worker, exp_args)
+
+            for exp_index, exit_code in results:
+                typer.echo(f"[{exp_index}/{len(experiments)}] Experiment completed")
+                if exit_code != 0:
+                    failed += 1
+        else:
+            # Sequential execution
+            for exp_index, script_path_arg, params, exp_subdir, verbose_arg in exp_args:
+                typer.echo(f"\n[{exp_index}/{len(experiments)}] Running experiment...")
+                exit_code = run_experiment(str(script_path_arg), params, experiment_dir=str(exp_subdir), verbose=verbose_arg)
+                if exit_code != 0:
+                    failed += 1
 
         # Create summary CSV combining parameters and results
-        create_results_summary(run_dir, experiments)
+        create_results_summary(run_dir, experiments, verbose)
 
         # Run post-processing script if specified
         if "post_process_script" in metadata:
             post_process_script = metadata["post_process_script"]
             if post_process_script:
                 summary_csv_path = run_dir / "summary.csv"
-                run_post_processing(str(post_process_script), summary_csv_path, run_dir)
+                run_post_processing(str(post_process_script), summary_csv_path, run_dir, verbose)
 
-        typer.echo("-" * 60)
-        typer.echo(f"Completed {len(experiments)} experiments: {len(experiments) - failed} succeeded, {failed} failed")
-        typer.echo(f"Results saved to: {run_dir}")
+        if verbose:
+            typer.echo("-" * 60)
+
+        # Calculate and display elapsed time
+        elapsed_seconds = time.time() - start_time
+        if timing:
+            minutes, seconds = divmod(elapsed_seconds, 60)
+            if minutes > 0:
+                time_str = f"{int(minutes)}m {seconds:.1f}s"
+            else:
+                time_str = f"{seconds:.1f}s"
+            typer.echo(f"Completed {len(experiments)} experiments: {len(experiments) - failed} succeeded, {failed} failed (Total time: {time_str})")
+        else:
+            typer.echo(f"Completed {len(experiments)} experiments: {len(experiments) - failed} succeeded, {failed} failed")
+
+        if verbose:
+            typer.echo(f"Results saved to: {run_dir}")
         raise typer.Exit(1 if failed > 0 else 0)
 
     except typer.Exit:
