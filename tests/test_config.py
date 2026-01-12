@@ -385,3 +385,106 @@ param2: [1, 2]
             assert count == 6  # 3 × 2
             rows = load_csv(str(csv_path))
             assert len(rows) == 6
+
+
+class TestBooleanConversion:
+    """Tests for boolean type conversion in load_csv."""
+
+    def test_boolean_true_variants(self):
+        """Should convert various true representations to True."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "test.csv"
+            with open(csv_path, "w", newline="") as f:
+                f.write("enabled\n")
+                f.write("True\n")
+                f.write("true\n")
+                f.write("yes\n")
+                f.write("on\n")
+
+            rows = load_csv(str(csv_path))
+            assert len(rows) == 4
+            assert all(row["enabled"] is True for row in rows)
+
+    def test_boolean_false_variants(self):
+        """Should convert various false representations to False."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "test.csv"
+            with open(csv_path, "w", newline="") as f:
+                f.write("enabled\n")
+                f.write("False\n")
+                f.write("false\n")
+                f.write("no\n")
+                f.write("off\n")
+
+            rows = load_csv(str(csv_path))
+            assert len(rows) == 4
+            assert all(row["enabled"] is False for row in rows)
+
+    def test_boolean_with_other_types(self):
+        """Should convert mixed types correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "test.csv"
+            with open(csv_path, "w", newline="") as f:
+                f.write("enabled,count,name,rate\n")
+                f.write("true,5,test,0.5\n")
+                f.write("false,10,model,0.1\n")
+
+            rows = load_csv(str(csv_path))
+            assert len(rows) == 2
+
+            # First row
+            assert rows[0]["enabled"] is True
+            assert rows[0]["count"] == 5
+            assert rows[0]["name"] == "test"
+            assert rows[0]["rate"] == 0.5
+
+            # Second row
+            assert rows[1]["enabled"] is False
+            assert rows[1]["count"] == 10
+            assert rows[1]["name"] == "model"
+            assert rows[1]["rate"] == 0.1
+
+    def test_boolean_case_insensitive(self):
+        """Should handle mixed case boolean values."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "test.csv"
+            with open(csv_path, "w", newline="") as f:
+                f.write("flag\n")
+                f.write("True\n")
+                f.write("FALSE\n")
+                f.write("Yes\n")
+                f.write("NO\n")
+
+            rows = load_csv(str(csv_path))
+            assert rows[0]["flag"] is True
+            assert rows[1]["flag"] is False
+            assert rows[2]["flag"] is True
+            assert rows[3]["flag"] is False
+
+    def test_non_boolean_strings_not_converted(self):
+        """Should not convert strings that look similar to booleans."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "test.csv"
+            with open(csv_path, "w", newline="") as f:
+                f.write("value\n")
+                f.write("truee\n")
+                f.write("falsee\n")
+
+            rows = load_csv(str(csv_path))
+            assert rows[0]["value"] == "truee"
+            assert rows[1]["value"] == "falsee"
+
+    def test_empty_values_unchanged(self):
+        """Should keep empty values unchanged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "test.csv"
+            with open(csv_path, "w", newline="") as f:
+                f.write("flag,count\n")
+                f.write("true,\n")
+                f.write(",5\n")
+
+            rows = load_csv(str(csv_path))
+            assert rows[0]["flag"] is True
+            assert rows[0]["count"] == ""
+            assert rows[1]["flag"] == ""
+            assert rows[1]["count"] == 5

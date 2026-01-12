@@ -173,22 +173,26 @@ def load_csv(csv_path: str) -> List[Dict[str, Any]]:
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            # Convert numeric strings to appropriate types
+            # Convert strings to appropriate types
             converted_row = {}
             for key, value in row.items():
                 if value is None or value == "":
                     converted_row[key] = value
                 else:
-                    # Try to convert to int
-                    try:
-                        converted_row[key] = int(value)
-                    except ValueError:
-                        # Try to convert to float
+                    # Try to convert to boolean
+                    if value.lower() in ("true", "false", "yes", "no", "on", "off"):
+                        converted_row[key] = value.lower() in ("true", "yes", "on")
+                    else:
+                        # Try to convert to int
                         try:
-                            converted_row[key] = float(value)
+                            converted_row[key] = int(value)
                         except ValueError:
-                            # Keep as string
-                            converted_row[key] = value
+                            # Try to convert to float
+                            try:
+                                converted_row[key] = float(value)
+                            except ValueError:
+                                # Keep as string
+                                converted_row[key] = value
             experiments.append(converted_row)
 
     return experiments

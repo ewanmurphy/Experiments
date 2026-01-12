@@ -62,8 +62,16 @@ def run_experiment(
     # Convert parameters to command-line arguments
     cmd = [sys.executable, str(script_file)]
     for key, value in params.items():
-        cmd.append(f"--{key}")
-        cmd.append(str(value))
+        if isinstance(value, bool):
+            # Handle boolean values as flags
+            # True: include the flag (--key)
+            # False: omit the flag (feature is disabled)
+            if value:
+                cmd.append(f"--{key}")
+        else:
+            # Handle non-boolean values as key-value pairs
+            cmd.append(f"--{key}")
+            cmd.append(str(value))
 
     try:
         # Run script as subprocess from experiment directory
