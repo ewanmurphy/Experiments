@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from multiprocessing import Pool
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 import typer
 from experiment import __version__
 from experiment.config import (
@@ -144,18 +144,57 @@ def run_post_processing(script_path: str, summary_csv_path: Path, run_dir: Path,
         typer.echo(f"Warning: Error running post-processing script: {e}", err=True)
 
 
-def _run_experiment_worker(args: Tuple) -> Tuple[int, int]:
+def _format_param_value(value: Any) -> str:
+    """Format a parameter value for display with consistent significant figures.
+
+    Formats floats to 4 significant figures with trailing zeros for alignment.
+
+    Args:
+        value: Parameter value to format
+
+    Returns:
+        Formatted string representation
+    """
+    if isinstance(value, float):
+        # Format with 4 significant figures
+        formatted = f"{value:.4g}"
+        # Pad decimal representations with trailing zeros for alignment
+        if '.' in formatted and 'e' not in formatted.lower():
+            # Pad to 8 characters with trailing zeros
+            formatted = formatted.ljust(8, '0')
+        return formatted
+    return str(value)
+
+
+def _format_param_with_padding(key: str, value: Any, widths: dict) -> str:
+    """Format a parameter key-value pair with padding for alignment.
+
+    Args:
+        key: Parameter name
+        value: Parameter value
+        widths: Dictionary mapping parameter names to their maximum widths
+
+    Returns:
+        Formatted string like "key=value  " with padding
+    """
+    formatted_value = _format_param_value(value)
+    width = widths.get(key, len(formatted_value))
+    padded_value = formatted_value.ljust(width)
+    return f"{key}={padded_value}"
+
+
+def _run_experiment_worker(args: Tuple) -> Tuple[int, int, dict]:
     """Worker function for parallel experiment execution.
 
     Args:
         args: Tuple of (experiment_index, script_path, params, exp_subdir, verbose)
 
     Returns:
-        Tuple of (experiment_index, exit_code)
+        Tuple of (experiment_index, exit_code, params)
     """
     exp_index, script_path, params, exp_subdir, verbose = args
     exit_code = run_experiment(str(script_path), params, experiment_dir=str(exp_subdir), output_to_console=False, verbose=verbose)
-    return (exp_index, exit_code)
+    return (exp_index, exit_code, params)
 
 
 @app.command()
@@ -167,6 +206,7 @@ def run(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed logging and metadata information"),
     parallel: int = typer.Option(1, "--parallel", "-n", help="Number of parallel workers (1 for sequential, 0 for auto-detect leaving 2 cores free)"),
     timing: bool = typer.Option(True, "--timing/--no-timing", help="Show total execution time"),
+    show_params: bool = typer.Option(False, "--show-params/--no-show-params", help="Show parameter values when experiments complete (parallel mode)"),
 ) -> None:
     """Run an experiment by name or interactive selection.
 
@@ -274,20 +314,48 @@ def run(
             exp_subdir = run_dir / f"exp_{i:03d}"
             exp_args.append((i, script_path, params, exp_subdir, verbose))
 
+        # Calculate parameter value widths for alignment
+        param_widths: dict = {}
+        if show_params:
+            for params in experiments:
+                for key, value in params.items():
+                    formatted_value = _format_param_value(value)
+                    current_max = param_widths.get(key, 0)
+                    param_widths[key] = max(current_max, len(formatted_value))
+
         if num_workers > 1:
             # Parallel execution
             typer.echo(f"Running {len(experiments)} experiments in parallel ({num_workers} workers)...")
-            with Pool(num_workers) as pool:
-                results = pool.map(_run_experiment_worker, exp_args)
 
-            for exp_index, exit_code in results:
-                typer.echo(f"[{exp_index}/{len(experiments)}] Experiment completed")
-                if exit_code != 0:
-                    failed += 1
+            completed = 0
+            total = len(experiments)
+            total_width = len(str(total))
+
+            with Pool(num_workers) as pool:
+                # Use imap_unordered to get results as they complete
+                for exp_index, exit_code, params in pool.imap_unordered(_run_experiment_worker, exp_args):
+                    completed += 1
+
+                    # Build status message with proper alignment
+                    status = ("succeeded" if exit_code == 0 else "FAILED").ljust(9)
+                    msg = f"[{completed:>{total_width}}/{total}] Experiment {exp_index:>{total_width}} completed: {status}"
+
+                    # Optionally show parameters
+                    if show_params:
+                        params_str = ", ".join(_format_param_with_padding(k, v, param_widths) for k, v in params.items())
+                        msg += f" ({params_str})"
+
+                    typer.echo(msg)
+
+                    if exit_code != 0:
+                        failed += 1
         else:
             # Sequential execution
+            total = len(experiments)
+            total_width = len(str(total))
+
             for exp_index, script_path_arg, params, exp_subdir, verbose_arg in exp_args:
-                typer.echo(f"\n[{exp_index}/{len(experiments)}] Running experiment...")
+                typer.echo(f"\n[{exp_index:>{total_width}}/{total}] Running experiment...")
                 exit_code = run_experiment(str(script_path_arg), params, experiment_dir=str(exp_subdir), verbose=verbose_arg)
                 if exit_code != 0:
                     failed += 1
