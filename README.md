@@ -116,6 +116,8 @@ experiment run my_experiment --param learning_rate=0.05
 
 ## Usage
 
+### Local Execution
+
 ```
 experiment run [EXPERIMENT_NAME] [OPTIONS]
 
@@ -125,6 +127,30 @@ Options:
   --show-params                   Show parameter values when experiments complete
   --verbose                       Show detailed logging
   --timing / --no-timing          Show total execution time
+```
+
+### SLURM Cluster Execution
+
+Submit experiments to a remote SLURM cluster:
+
+```bash
+# Submit experiments to cluster (non-blocking)
+experiment cluster-submit my_experiment
+
+# Check job status
+experiment cluster-status my_experiment_2026_Jan_15_10h30m00s
+
+# List all submitted cluster jobs
+experiment cluster-list
+
+# Monitor job until completion
+experiment cluster-status my_experiment_2026_Jan_15_10h30m00s --watch
+
+# Collect results when job is done
+experiment cluster-collect my_experiment_2026_Jan_15_10h30m00s
+
+# Cancel a job
+experiment cluster-cancel my_experiment_2026_Jan_15_10h30m00s
 ```
 
 ## Project Structure
@@ -142,9 +168,20 @@ experiment/
 ├── config.py                    # Configuration loading and CSV generation
 ├── runner.py                    # Experiment execution
 ├── logger.py                    # Logging and metadata tracking
-└── main.py                      # CLI entry point
+├── main.py                      # CLI entry point
+└── cluster/                     # SLURM cluster support
+    ├── __init__.py              # Cluster module exports
+    ├── config.py                # Cluster config loading
+    ├── state.py                 # Job metadata management
+    ├── ssh.py                   # SSH and rsync utilities
+    └── slurm.py                 # SLURM script generation and job management
 tests/
-└── test_config.py               # Configuration tests
+├── test_config.py               # Configuration tests
+├── test_cluster_config.py       # Cluster config tests
+└── test_cluster_state.py        # Cluster state management tests
+.experiment_runs/                # Cluster job metadata (auto-created)
+├── {run_id}.json                # Job metadata for each submitted run
+cluster.yaml                     # Cluster configuration (user creates)
 ```
 
 ## Results
@@ -176,6 +213,249 @@ post_process_script: plot_results.py
 ```
 
 The `plot_results.py` receives `summary.csv` as an argument and runs from the experiment directory.
+
+## SLURM Cluster Integration
+
+This tool supports submitting experiments to remote SLURM clusters for large-scale parallel execution.
+
+### Setup
+
+#### 1. Create cluster configuration file
+
+You can create a cluster configuration in one of two ways:
+
+**Option A: Per-Experiment Config** (Recommended for different clusters per experiment)
+
+Create `experiments/{experiment_name}/cluster.yaml`:
+
+```yaml
+ssh:
+  host: "gpu-cluster.example.edu"
+  user: "username"
+  remote_base_dir: "/home/username/experiments"
+
+slurm:
+  partition: "gpu"
+  time_limit: "04:00:00"
+  memory: "16G"
+  cpus: 4
+  gpus: 1
+```
+
+**Option B: Project Root Config** (For shared cluster settings)
+
+Create `cluster.yaml` in your project root (used by all experiments):
+
+```yaml
+# SSH Connection
+ssh:
+  host: "cluster.example.edu"
+  user: "username"
+  remote_base_dir: "/home/username/experiments"
+
+# Default SLURM settings
+slurm:
+  partition: "standard"
+  time_limit: "01:00:00"
+  memory: "4G"
+  cpus: 1
+  gpus: 0
+  max_concurrent: 0  # 0 means no limit
+
+# Optional: Modules to load on cluster
+modules:
+  - "python/3.9"
+
+# Optional: Environment activation
+environment: "source ~/venv/bin/activate"
+
+# File sync patterns (rsync --include format)
+sync:
+  to_cluster:
+    - "*.py"
+    - "*.yaml"
+    - "*.txt"
+    - "data/**"
+    - "src/**"
+  from_cluster:
+    - "exp_*/results.json"
+    - "exp_*/logs/**"
+    - "slurm_*.out"
+    - "slurm_*.err"
+```
+
+#### 1.1 Configuration Search Order
+
+When you run `experiment cluster-submit`, the tool searches for cluster config in this order:
+
+1. **Per-experiment config** (highest priority): `experiments/{experiment_name}/cluster.yaml`
+2. **Project root config**: `./cluster.yaml`
+3. **Explicit override**: `--cluster-config /path/to/config.yaml` flag
+
+This allows:
+- Different experiments to use different SLURM clusters
+- All experiments to share a common cluster config
+- Override behavior with the `--cluster-config` flag
+
+**Example: Two experiments on different clusters**
+
+```
+project/
+├── experiments/
+│   ├── gpu_experiments/
+│   │   ├── config.yaml
+│   │   └── cluster.yaml          ← GPU cluster config
+│   ├── cpu_experiments/
+│   │   ├── config.yaml
+│   │   └── cluster.yaml          ← CPU cluster config
+└── cluster.yaml                   ← Fallback (not used in above)
+```
+
+#### 2. SSH Configuration
+
+The tool uses your system's SSH configuration (~/.ssh/config). Ensure:
+
+```
+Host cluster.example.edu
+    User username
+    IdentityFile ~/.ssh/id_rsa
+    # Add ProxyJump if needed for jump hosts
+```
+
+Test your connection:
+```bash
+ssh username@cluster.example.edu echo "ok"
+```
+
+#### 3. Per-Experiment SLURM Settings (Optional)
+
+Override SLURM settings for specific experiments by adding a `cluster` section to `config.yaml`:
+
+```yaml
+script: train.py
+learning_rate: {start: 0.001, end: 0.1, divisions: 5}
+
+# Override cluster settings for GPU experiments
+cluster:
+  partition: "gpu"
+  time_limit: "04:00:00"
+  memory: "16G"
+  cpus: 4
+  gpus: 1
+  max_concurrent: 10
+  modules:
+    - "cuda/11.8"
+  sync:
+    to_cluster:
+      - "models/**"
+      - "pretrained/*.pth"
+```
+
+### Workflow
+
+#### Step 1: Submit Job
+
+```bash
+experiment cluster-submit my_experiment --verbose
+```
+
+Output:
+```
+Submitting 10 experiments to cluster
+Host: cluster.example.edu
+Partition: standard
+
+Job submitted successfully!
+  Run ID: my_experiment_2026_Jan_15_10h30m00s
+  SLURM Job ID: 12345
+  Experiments: 10
+
+Monitor status with: experiment cluster-status my_experiment_2026_Jan_15_10h30m00s
+Collect results with: experiment cluster-collect my_experiment_2026_Jan_15_10h30m00s
+```
+
+#### Step 2: Monitor Job (Optional)
+
+```bash
+# Check current status
+experiment cluster-status my_experiment_2026_Jan_15_10h30m00s
+
+# Watch until completion
+experiment cluster-status my_experiment_2026_Jan_15_10h30m00s --watch
+
+# List all submitted jobs
+experiment cluster-list
+```
+
+#### Step 3: Collect Results
+
+```bash
+experiment cluster-collect my_experiment_2026_Jan_15_10h30m00s
+```
+
+This will:
+1. Download results from cluster to local directory
+2. Generate `summary.csv` combining parameters and results
+3. Run post-processing script if configured
+4. Display location of collected results
+
+### How It Works
+
+1. **Submit**: Tool generates a SLURM array job script and submits it to the cluster
+2. **Array Job**: All experiments run as tasks within a single SLURM array job
+3. **Parameter Mapping**: Each SLURM array task ID maps to a row in the parameter CSV
+4. **File Sync**: Files are synced TO cluster before submission, FROM cluster after completion
+5. **Results**: All results are aggregated locally into `summary.csv`
+
+### Advanced Features
+
+#### Dry Run
+```bash
+experiment cluster-submit my_experiment --dry-run
+```
+Generates SLURM script without submitting.
+
+#### Watch After Submit
+```bash
+experiment cluster-submit my_experiment --watch
+```
+Monitors job status automatically after submission.
+
+#### Collect with Force
+```bash
+experiment cluster-collect my_experiment --force
+```
+Collects results even if job is still running.
+
+#### Skip Post-Processing
+```bash
+experiment cluster-collect my_experiment --skip-postprocess
+```
+Collects results without running post-processing script.
+
+### Troubleshooting
+
+#### SSH Connection Issues
+- Verify SSH key is in `~/.ssh/id_rsa`
+- Test manually: `ssh user@host "echo ok"`
+- Add host to `~/.ssh/config`
+
+#### File Sync Issues
+- Check rsync is installed: `which rsync`
+- Verify remote directory exists: `ssh user@host ls /remote/path`
+- Review sync patterns in `cluster.yaml`
+
+#### SLURM Job Fails
+- Check SLURM error output: `squeue -j JOBID`
+- Review remote logs: Check `slurm_*.err` files in results
+- Verify partition exists: `sinfo | grep partition_name`
+- Ensure time limit is sufficient: Increase `time_limit` in config
+
+#### Script Execution on Cluster
+- Verify script is synced: Check remote experiment directory
+- Test module loads: Confirm modules in `cluster.yaml` exist on cluster
+- Check Python path: Ensure Python/virtualenv is activated
+- View execution logs: `slurm_*.out` and `exp_*/logs/` files
 
 ## Testing
 

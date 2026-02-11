@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 # Reserved field names that are metadata, not experiment parameters
-RESERVED_FIELDS = {"post_process_script", "script"}
+RESERVED_FIELDS = {"post_process_script", "script", "cluster"}
 
 
 def is_range_spec(value: Any) -> bool:
