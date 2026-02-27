@@ -11,10 +11,10 @@ from typing import Optional, List, Dict, Any
 class ClusterMetadata:
     """Cluster-specific metadata for a job."""
     host: str
-    user: str
     slurm_job_id: str
-    partition: str
     num_experiments: int
+    user: Optional[str] = None  # None when using SSH config alias
+    partition: Optional[str] = None  # None uses cluster default
 
 
 @dataclass

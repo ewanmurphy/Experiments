@@ -10,13 +10,28 @@ class SSHError(Exception):
     pass
 
 
-def test_ssh_connection(host: str, user: str, timeout: int = 5) -> bool:
+def _ssh_target(host: str, user: Optional[str] = None) -> str:
+    """Build SSH target string, handling optional user.
+
+    Args:
+        host: SSH host
+        user: SSH user (optional; if None, SSH config alias resolution is used)
+
+    Returns:
+        SSH target string: "user@host" if user provided, else "host"
+    """
+    if user:
+        return f"{user}@{host}"
+    return host
+
+
+def test_ssh_connection(host: str, user: Optional[str] = None, timeout: int = 5) -> bool:
     """Test SSH connection to host.
 
     Args:
         host: SSH host
-        user: SSH user
-        timeout: Connection timeout in seconds
+        user: SSH user (optional; if None, SSH config alias resolution is used)
+        timeout: Connection timeout in seconds (default: 5)
 
     Returns:
         True if connection successful, False otherwise
@@ -26,7 +41,7 @@ def test_ssh_connection(host: str, user: str, timeout: int = 5) -> bool:
     """
     try:
         result = subprocess.run(
-            ["ssh", "-o", f"ConnectTimeout={timeout}", f"{user}@{host}", "echo", "ok"],
+            ["ssh", "-o", f"ConnectTimeout={timeout}", _ssh_target(host, user), "echo", "ok"],
             capture_output=True,
             text=True,
             timeout=timeout + 2
@@ -40,7 +55,7 @@ def test_ssh_connection(host: str, user: str, timeout: int = 5) -> bool:
 
 def execute_remote_command(
     host: str,
-    user: str,
+    user: Optional[str],
     command: str,
     verbose: bool = False
 ) -> Tuple[int, str]:
@@ -48,7 +63,7 @@ def execute_remote_command(
 
     Args:
         host: SSH host
-        user: SSH user
+        user: SSH user (optional; if None, SSH config alias resolution is used)
         command: Command to execute on remote host
         verbose: Print command and output to stdout
 
@@ -58,7 +73,7 @@ def execute_remote_command(
     Raises:
         SSHError: If SSH execution fails
     """
-    ssh_cmd = ["ssh", f"{user}@{host}", command]
+    ssh_cmd = ["ssh", _ssh_target(host, user), command]
 
     if verbose:
         print(f"  [SSH] {' '.join(ssh_cmd)}")
@@ -74,12 +89,12 @@ def execute_remote_command(
         raise SSHError(f"SSH command execution failed: {e}")
 
 
-def create_remote_directory(host: str, user: str, path: str, verbose: bool = False) -> bool:
+def create_remote_directory(host: str, user: Optional[str], path: str, verbose: bool = False) -> bool:
     """Create directory on remote host.
 
     Args:
         host: SSH host
-        user: SSH user
+        user: SSH user (optional; if None, SSH config alias resolution is used)
         path: Remote directory path
         verbose: Print details to stdout
 
@@ -102,7 +117,7 @@ def rsync_to_cluster(
     remote_dir: str,
     patterns: list,
     host: str,
-    user: str,
+    user: Optional[str],
     verbose: bool = False,
     progress: bool = True
 ) -> bool:
@@ -113,7 +128,7 @@ def rsync_to_cluster(
         remote_dir: Remote destination directory
         patterns: List of include patterns (rsync --include syntax)
         host: Remote host
-        user: Remote user
+        user: Remote user (optional; if None, SSH config alias resolution is used)
         verbose: Print detailed output
         progress: Show progress during transfer
 
@@ -146,7 +161,7 @@ def rsync_to_cluster(
 
     # Source and destination
     cmd.append(f"{local_path}/")
-    cmd.append(f"{user}@{host}:{remote_dir}/")
+    cmd.append(f"{_ssh_target(host, user)}:{remote_dir}/")
 
     if verbose:
         print(f"  [RSYNC TO] {' '.join(cmd)}")
@@ -165,7 +180,7 @@ def rsync_from_cluster(
     local_dir: str,
     patterns: list,
     host: str,
-    user: str,
+    user: Optional[str],
     verbose: bool = False,
     progress: bool = True
 ) -> bool:
@@ -176,7 +191,7 @@ def rsync_from_cluster(
         local_dir: Local destination directory
         patterns: List of include patterns (rsync --include syntax)
         host: Remote host
-        user: Remote user
+        user: Remote user (optional; if None, SSH config alias resolution is used)
         verbose: Print detailed output
         progress: Show progress during transfer
 
@@ -213,7 +228,7 @@ def rsync_from_cluster(
         cmd.append("-v")
 
     # Source and destination
-    cmd.append(f"{user}@{host}:{remote_dir}/")
+    cmd.append(f"{_ssh_target(host, user)}:{remote_dir}/")
     cmd.append(f"{local_path}/")
 
     if verbose:
