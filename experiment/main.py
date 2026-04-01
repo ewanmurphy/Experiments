@@ -21,6 +21,7 @@ from experiment.config import (
 from experiment.runner import run_experiment
 from experiment.cluster import (
     find_cluster_config,
+    find_cluster_configs,
     load_cluster_config,
     merge_experiment_cluster_config,
     RunStateManager,
@@ -98,7 +99,17 @@ def create_results_summary(run_dir: Path, experiments: List[dict], verbose: bool
     # Write summary CSV
     if summary:
         summary_file = run_dir / "summary.csv"
-        fieldnames = list(summary[0].keys())
+        # Collect all fieldnames from all experiments to handle different result fields
+        # Start with original parameter fieldnames, then add any result fields
+        fieldnames = list(experiments[0].keys()) if experiments else []
+        seen = set(fieldnames)
+
+        # Add any additional result fields that appear in any experiment
+        for row in summary:
+            for key in row.keys():
+                if key not in seen:
+                    fieldnames.append(key)
+                    seen.add(key)
 
         with open(summary_file, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -400,7 +411,7 @@ def run(
             post_process_script = metadata["post_process_script"]
             if post_process_script:
                 summary_csv_path = run_dir / "summary.csv"
-                run_post_processing(str(post_process_script), summary_csv_path, run_dir, verbose)
+                run_post_processing(str(post_process_script), summary_csv_path, run_dir, script_dir=exp_dir, verbose=verbose)
 
         if verbose:
             typer.echo("-" * 60)
@@ -474,11 +485,31 @@ def cluster_submit(
             typer.echo(f"Error: {config_file} not found", err=True)
             raise typer.Exit(1)
 
-        # Find and load cluster config
+        # Discover all available cluster configs
         try:
-            config_path = find_cluster_config(experiment_name, cluster_config if cluster_config != "cluster.yaml" else None)
-            cluster_cfg = load_cluster_config(config_path)
+            configs = find_cluster_configs(
+                experiment_name,
+                cluster_config if cluster_config != "cluster.yaml" else None
+            )
         except FileNotFoundError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
+
+        # If multiple configs, prompt user to select one
+        if len(configs) > 1:
+            import questionary
+            choices = [questionary.Choice(name, path) for name, path in configs]
+            config_path = questionary.select("Select cluster config:", choices=choices).ask()
+            if config_path is None:
+                typer.echo("Selection cancelled", err=True)
+                raise typer.Exit(1)
+        else:
+            config_path = configs[0][1]
+
+        # Load selected cluster config
+        try:
+            cluster_cfg = load_cluster_config(config_path)
+        except (FileNotFoundError, ValueError) as e:
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1)
 
@@ -533,6 +564,7 @@ def cluster_submit(
             script_path=f"../../{script_basename}",
             num_experiments=len(experiments),
             partition=cluster_cfg.slurm.partition,
+            account=cluster_cfg.slurm.account,
             time_limit=cluster_cfg.slurm.time_limit,
             memory=cluster_cfg.slurm.memory,
             cpus=cluster_cfg.slurm.cpus,
@@ -762,11 +794,20 @@ def cluster_status(
                     )
                     typer.echo(f"[{status.job_id}] {status.state} - {status.completed_tasks}/{status.total_tasks} tasks")
 
-                    # Check if all tasks are actually done (not just if SLURM says COMPLETED)
+                    # Only consider job done if we have valid task counts AND all tasks are done
+                    # Don't exit just because main job state is terminal (array task counts take priority)
                     all_tasks_done = status.total_tasks > 0 and status.completed_tasks == status.total_tasks
-                    if all_tasks_done:
-                        typer.echo("Job completed!")
-                        state_manager.update_status(run_id, "completed")
+
+                    # Handle explicit job cancellation/timeout even without task counts
+                    cancelled_states = ("CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL")
+                    explicitly_terminated = status.state in cancelled_states
+
+                    if all_tasks_done or explicitly_terminated:
+                        if status.state == "COMPLETED" or all_tasks_done:
+                            typer.echo("Job completed!")
+                        else:
+                            typer.echo(f"Job terminated: {status.state}")
+                        state_manager.update_status(run_id, status.state.lower())
                         break
                     time.sleep(interval)
             except KeyboardInterrupt:
@@ -924,6 +965,195 @@ def cluster_collect(
 
 
 @app.command()
+def cluster_pull(
+    run_id: Optional[str] = typer.Argument(None, help="Run ID from cluster-submit (optional, interactive selection if omitted)"),
+    skip_postprocess: bool = typer.Option(False, "--skip-postprocess", help="Skip post-processing"),
+    watch: bool = typer.Option(False, "--watch", help="Continuously sync results until completion"),
+    interval: int = typer.Option(60, "--interval", help="Polling interval in seconds"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed output"),
+) -> None:
+    """Sync partial results from running cluster job and run post-processing.
+
+    Can be run multiple times to monitor progress without blocking.
+    Use --watch to continuously pull results until job completes.
+    Unlike cluster-collect, does not finalize the run or delete remote files.
+    """
+    try:
+        state_manager = RunStateManager()
+
+        # Interactive selection if run_id not provided
+        if run_id is None:
+            runs = state_manager.list_runs()
+            if not runs:
+                typer.echo("No submitted cluster jobs found")
+                raise typer.Exit(0)
+
+            # Sort by submitted_at timestamp in descending order (most recent first)
+            try:
+                runs_sorted = sorted(
+                    runs,
+                    key=lambda r: r.submitted_at if r.submitted_at else "",
+                    reverse=True
+                )
+            except (TypeError, AttributeError):
+                runs_sorted = runs
+
+            # Interactive selection
+            import questionary
+
+            choices = []
+            for run in runs_sorted:
+                submitted_time = run.submitted_at.split("T")[1][:5] if "T" in run.submitted_at else ""
+                label = f"{run.run_id:45} [{run.status:10}] {submitted_time}"
+                choices.append(questionary.Choice(label, run.run_id))
+
+            run_id = questionary.select(
+                "Select a job to pull results from:",
+                choices=choices
+            ).ask()
+
+            if run_id is None:
+                typer.echo("Selection cancelled")
+                raise typer.Exit(0)
+
+        try:
+            metadata = state_manager.load_run(run_id)
+        except FileNotFoundError:
+            typer.echo(f"Error: Run not found: {run_id}", err=True)
+            raise typer.Exit(1)
+
+        def pull_once() -> bool:
+            """Pull results once. Returns True if all tasks are complete or job terminated according to SLURM."""
+            # Show job status and check completion
+            all_done = False
+            try:
+                status = get_job_status(
+                    metadata.cluster.slurm_job_id,
+                    metadata.cluster.host,
+                    metadata.cluster.user,
+                    verbose=verbose
+                )
+                typer.echo(f"[{status.job_id}] {status.state} - {status.completed_tasks}/{status.total_tasks} tasks")
+                # Only consider job done if we have valid task counts AND all tasks are done
+                # Don't exit just because main job state is terminal (array task counts take priority)
+                all_tasks_done = status.total_tasks > 0 and status.completed_tasks == status.total_tasks
+
+                # Handle explicit job cancellation/timeout even without task counts
+                cancelled_states = ("CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL")
+                explicitly_terminated = status.state in cancelled_states
+
+                all_done = all_tasks_done or explicitly_terminated
+            except SSHError:
+                # Job may have left SLURM's accounting window, but we can still sync
+                typer.echo(f"[Warning] Could not query SLURM status (job may be too old or already removed)")
+                # In watch mode, if we can't query SLURM, we can't reliably determine completion
+                # so we continue polling (user can Ctrl+C to stop)
+
+            # Sync results from cluster
+            try:
+                # Load cluster config to get sync patterns
+                try:
+                    config_path = find_cluster_config(metadata.experiment_name)
+                except FileNotFoundError:
+                    config_path = None
+
+                if config_path:
+                    cluster_cfg = load_cluster_config(config_path)
+                    patterns = cluster_cfg.sync.from_cluster
+                else:
+                    # Default patterns
+                    patterns = ["exp_*", "slurm_*.out", "slurm_*.err"]
+
+                rsync_from_cluster(
+                    remote_dir=metadata.remote_dir,
+                    local_dir=metadata.local_dir,
+                    patterns=patterns,
+                    host=metadata.cluster.host,
+                    user=metadata.cluster.user,
+                    verbose=verbose
+                )
+            except SSHError as e:
+                typer.echo(f"Error syncing results: {e}", err=True)
+                raise typer.Exit(1)
+
+            # Report local progress (count results.json files modified after job submission)
+            local_count = 0
+            try:
+                submitted_time = datetime.fromisoformat(metadata.submitted_at)
+                for i in range(1, metadata.cluster.num_experiments + 1):
+                    results_file = Path(metadata.local_dir) / f"exp_{i}" / "results.json"
+                    if results_file.exists():
+                        # Only count files modified after job submission
+                        mtime = datetime.fromtimestamp(results_file.stat().st_mtime)
+                        if mtime > submitted_time:
+                            local_count += 1
+            except (ValueError, OSError):
+                # Fallback: if we can't parse timestamps, just count existing files
+                for i in range(1, metadata.cluster.num_experiments + 1):
+                    results_file = Path(metadata.local_dir) / f"exp_{i}" / "results.json"
+                    if results_file.exists():
+                        local_count += 1
+
+            typer.echo(f"Local progress: {local_count}/{metadata.cluster.num_experiments} results collected")
+
+            # Generate summary CSV
+            experiments = []
+            for i in range(1, metadata.cluster.num_experiments + 1):
+                exp_dir = Path(metadata.local_dir) / f"exp_{i}"
+                if exp_dir.exists():
+                    # Try to get parameters from original CSV
+                    csv_file = Path(metadata.local_dir) / "config_generated.csv"
+                    if csv_file.exists():
+                        exps = load_csv(str(csv_file))
+                        if i <= len(exps):
+                            experiments.append(exps[i-1])
+                        else:
+                            experiments.append({})
+                    else:
+                        experiments.append({})
+
+            create_results_summary(Path(metadata.local_dir), experiments, verbose=verbose)
+
+            # Run post-processing if configured
+            if not skip_postprocess:
+                config_file = Path(metadata.config_file)
+                if config_file.exists():
+                    _, cfg_metadata = yaml_to_csv(str(config_file))
+                    if "post_process_script" in cfg_metadata:
+                        summary_csv = Path(metadata.local_dir) / "summary.csv"
+                        run_post_processing(
+                            cfg_metadata["post_process_script"],
+                            summary_csv,
+                            Path(metadata.local_dir),
+                            script_dir=config_file.parent,
+                            verbose=verbose
+                        )
+
+            return all_done
+
+        if watch:
+            typer.echo("Syncing results (Ctrl+C to stop)...")
+            try:
+                while True:
+                    all_done = pull_once()
+                    if all_done:
+                        typer.echo("\nAll tasks completed! Run 'experiment cluster-collect' to finalize.")
+                        break
+                    time.sleep(interval)
+            except KeyboardInterrupt:
+                typer.echo("\nDetached from syncing")
+        else:
+            typer.echo("Syncing results from cluster...")
+            pull_once()
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def cluster_cancel(
     run_id: Optional[str] = typer.Argument(None, help="Run ID from cluster-submit (optional, interactive selection if omitted)"),
     force: bool = typer.Option(False, "--force", help="Don't ask for confirmation"),
@@ -1039,17 +1269,39 @@ def cluster_list(
 
 @app.command()
 def cluster_info(
-    cluster_config: str = typer.Option("cluster.yaml", "--cluster-config", help="Path to cluster config"),
+    cluster_config: str = typer.Option("cluster.yaml", "--cluster-config", help="Path to cluster config (or config name for interactive selection)"),
     partition: Optional[str] = typer.Option(None, "--partition", "-p", help="Filter by specific partition"),
     detailed: bool = typer.Option(False, "--detailed", "-d", help="Show detailed table view"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show partition configuration details"),
 ) -> None:
     """Display cluster resource availability and queue status."""
     try:
+        # If using default cluster.yaml, check for multiple configs
+        if cluster_config == "cluster.yaml":
+            try:
+                configs = find_cluster_configs("")
+            except FileNotFoundError:
+                configs = []
+
+            # If multiple configs found, prompt for selection
+            if len(configs) > 1:
+                import questionary
+                choices = [questionary.Choice(name, path) for name, path in configs]
+                config_path = questionary.select("Select cluster config:", choices=choices).ask()
+                if config_path is None:
+                    typer.echo("Selection cancelled", err=True)
+                    raise typer.Exit(1)
+            elif len(configs) == 1:
+                config_path = configs[0][1]
+            else:
+                config_path = cluster_config
+        else:
+            config_path = cluster_config
+
         # Load cluster configuration
-        config = load_cluster_config(cluster_config)
+        config = load_cluster_config(config_path)
         if config is None:
-            typer.echo(f"Error: Could not load cluster config from {cluster_config}", err=True)
+            typer.echo(f"Error: Could not load cluster config from {config_path}", err=True)
             raise typer.Exit(1)
 
         # Get cluster resources
@@ -1104,17 +1356,39 @@ def cluster_info(
 
 @app.command()
 def cluster_limits(
-    cluster_config: str = typer.Option("cluster.yaml", "--cluster-config", help="Path to cluster config"),
+    cluster_config: str = typer.Option("cluster.yaml", "--cluster-config", help="Path to cluster config (or config name for interactive selection)"),
     username: Optional[str] = typer.Option(None, "--user", "-u", help="Username to check (defaults to SSH user)"),
     detailed: bool = typer.Option(False, "--detailed", "-d", help="Show detailed view"),
     all_limits: bool = typer.Option(False, "--all", "-a", help="Show all possible ways you could be limited"),
 ) -> None:
     """Check your account resource limits on the cluster."""
     try:
+        # If using default cluster.yaml, check for multiple configs
+        if cluster_config == "cluster.yaml":
+            try:
+                configs = find_cluster_configs("")
+            except FileNotFoundError:
+                configs = []
+
+            # If multiple configs found, prompt for selection
+            if len(configs) > 1:
+                import questionary
+                choices = [questionary.Choice(name, path) for name, path in configs]
+                config_path = questionary.select("Select cluster config:", choices=choices).ask()
+                if config_path is None:
+                    typer.echo("Selection cancelled", err=True)
+                    raise typer.Exit(1)
+            elif len(configs) == 1:
+                config_path = configs[0][1]
+            else:
+                config_path = cluster_config
+        else:
+            config_path = cluster_config
+
         # Load cluster configuration
-        config = load_cluster_config(cluster_config)
+        config = load_cluster_config(config_path)
         if config is None:
-            typer.echo(f"Error: Could not load cluster config from {cluster_config}", err=True)
+            typer.echo(f"Error: Could not load cluster config from {config_path}", err=True)
             raise typer.Exit(1)
 
         # Determine which user to check

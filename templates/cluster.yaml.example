@@ -1,0 +1,158 @@
+# SLURM Cluster Configuration Template
+#
+# LOCATION OPTIONS:
+#
+# 1. Per-Experiment Config (Recommended):
+#    Copy to: experiments/{experiment_name}/cluster.yaml
+#    Use when: Different experiments need different clusters/settings
+#
+# 2. Project Root Config (Shared):
+#    Copy to: ./cluster.yaml (project root)
+#    Use when: All experiments use the same cluster
+#
+# The tool searches in this order:
+#   1. experiments/{experiment_name}/cluster.yaml (if exists)
+#   2. ./cluster.yaml (if exists)
+#   3. --cluster-config flag path (if specified)
+#
+# Required fields:
+#   ssh.host - SSH hostname or IP of SLURM cluster
+#   ssh.user - SSH username for cluster access
+#   ssh.remote_base_dir - Where to store experiment files on cluster
+#
+# Optional fields:
+#   slurm.* - Default resource allocations (can be overridden per experiment)
+#   modules - Module files to load on cluster (e.g., python, cuda)
+#   environment - Command to activate virtual environment
+#   sync.* - File patterns for syncing (rsync format)
+
+# ============================================================================
+# SSH Connection Settings
+# ============================================================================
+ssh:
+  # Hostname or IP of SLURM cluster
+  host: "cluster.example.edu"
+
+  # SSH username (assumes key-based auth via ~/.ssh/config)
+  user: "username"
+
+  # Remote directory where experiments will be stored
+  # Will create subdirectories: {remote_base_dir}/{exp_name}/{timestamp}/
+  remote_base_dir: "/home/username/experiments"
+
+# ============================================================================
+# SLURM Resource Defaults
+# ============================================================================
+slurm:
+  # SLURM partition/queue to submit to
+  partition: "standard"
+
+  # Maximum wall time for each experiment (HH:MM:SS)
+  time_limit: "01:00:00"
+
+  # Memory per task (e.g., 4G, 1024M, 16GB)
+  memory: "4G"
+
+  # CPU cores per task
+  cpus: 1
+
+  # GPUs per task (0 if no GPU needed)
+  gpus: 0
+
+  # Maximum concurrent tasks (0 = no limit)
+  # Useful to avoid overwhelming the cluster
+  max_concurrent: 0
+
+# ============================================================================
+# Environment Setup (Optional)
+# ============================================================================
+# Module files to load on cluster (cluster-specific)
+# Run 'module avail' on cluster to see available modules
+modules:
+  - "python/3.9"
+  # - "cuda/11.8"        # Uncomment if using GPU
+  # - "gcc/11"           # Uncomment if needed
+
+# Command to activate virtual environment on cluster
+# If using conda:
+#   environment: "source /home/username/miniconda3/bin/activate myenv"
+# If using venv:
+#   environment: "source ~/venv/bin/activate"
+# If not needed, comment out or leave empty:
+environment: "source ~/venv/bin/activate"
+
+# ============================================================================
+# File Synchronization Patterns (rsync format)
+# ============================================================================
+sync:
+  # Files to sync TO cluster before job submission
+  # Use rsync include patterns (e.g., "*.py", "data/**", "src/")
+  to_cluster:
+    - "*.py"           # All Python scripts in root
+    - "*.yaml"         # YAML config files
+    - "*.txt"          # Text files
+    - "data/**"        # Everything in data/ directory
+    - "src/**"         # Everything in src/ directory
+    - "models/**"      # Pre-trained models (if needed)
+
+  # Files to sync FROM cluster after job completion
+  from_cluster:
+    - "exp_*/results.json"    # Experiment results
+    - "exp_*/logs/**"         # Execution logs
+    - "slurm_*.out"           # SLURM stdout
+    - "slurm_*.err"           # SLURM stderr
+    # Add more patterns as needed:
+    # - "exp_*/checkpoints/**"  # Checkpoint files
+    # - "exp_*/plots/**"        # Visualization outputs
+
+# ============================================================================
+# Advanced Configuration Examples
+# ============================================================================
+#
+# Example 1: GPU experiments
+#   partition: "gpu"
+#   time_limit: "04:00:00"
+#   memory: "16G"
+#   cpus: 4
+#   gpus: 1
+#   modules:
+#     - "python/3.9"
+#     - "cuda/11.8"
+#
+# Example 2: High-memory experiments
+#   partition: "memory"
+#   time_limit: "12:00:00"
+#   memory: "64G"
+#   cpus: 8
+#
+# Example 3: With conda environment
+#   environment: "conda activate myenv"
+#   modules:
+#     - "conda"
+#
+# Example 4: Jump host access (in ~/.ssh/config)
+#   Host cluster.example.edu
+#       User username
+#       ProxyJump jumphost.example.com
+#       IdentityFile ~/.ssh/id_rsa
+#
+# ============================================================================
+# Testing Your Configuration
+# ============================================================================
+#
+# 1. Test SSH connection:
+#    ssh username@cluster.example.edu echo "SSH works"
+#
+# 2. Test rsync:
+#    rsync --version
+#
+# 3. Test SLURM access:
+#    ssh username@cluster.example.edu sinfo
+#
+# 4. Create a test experiment and try dry-run:
+#    experiment cluster-submit test_exp --dry-run
+#
+# 5. Review generated SLURM script:
+#    cat experiments/test_exp/YYYY_Mon_DD_HHhMMmSSs/cluster_job.sh
+#
+# ============================================================================

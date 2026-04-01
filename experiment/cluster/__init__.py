@@ -6,6 +6,7 @@ from .config import (
     SlurmConfig,
     SyncConfig,
     find_cluster_config,
+    find_cluster_configs,
     load_cluster_config,
     merge_experiment_cluster_config,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "SlurmConfig",
     "SyncConfig",
     "find_cluster_config",
+    "find_cluster_configs",
     "load_cluster_config",
     "merge_experiment_cluster_config",
     "RunMetadata",

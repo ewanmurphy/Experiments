@@ -21,7 +21,8 @@ class JobStatus:
 def generate_slurm_script(
     script_path: str,
     num_experiments: int,
-    partition: str,
+    partition: Optional[str],
+    account: Optional[str],
     time_limit: str,
     memory: str,
     cpus: int,
@@ -38,7 +39,8 @@ def generate_slurm_script(
     Args:
         script_path: Name of experiment script (relative path in remote dir)
         num_experiments: Number of experiments (array size)
-        partition: SLURM partition/queue
+        partition: SLURM partition/queue (None uses cluster default)
+        account: SLURM account/project (None uses user's default account)
         time_limit: Time limit (HH:MM:SS format)
         memory: Memory per task (e.g., 4G)
         cpus: CPUs per task
@@ -66,8 +68,13 @@ def generate_slurm_script(
     else:
         sbatch_lines.append(f"#SBATCH --array=1-{num_experiments}")
 
+    if partition:
+        sbatch_lines.append(f"#SBATCH --partition={partition}")
+
+    if account:
+        sbatch_lines.append(f"#SBATCH --account={account}")
+
     sbatch_lines.extend([
-        f"#SBATCH --partition={partition}",
         f"#SBATCH --time={time_limit}",
         f"#SBATCH --mem={memory}",
         f"#SBATCH --cpus-per-task={cpus}",
@@ -91,6 +98,10 @@ def generate_slurm_script(
     if environment:
         script += f"{environment}\n"
         script += "\n"
+
+    # Enable unbuffered Python output for real-time log visibility
+    script += "export PYTHONUNBUFFERED=1\n"
+    script += "\n"
 
     # Change to run directory
     script += f"cd {remote_run_dir}\n"
@@ -134,12 +145,13 @@ NR==task+1 {
     # If script_path starts with .., use it as-is (it already has relative path)
     # Otherwise, add ../ to reference parent directory
     # Use array expansion for proper argument handling (unquoted to pass as separate args)
+    # Use -u flag for unbuffered output (real-time log visibility)
     if script_path.startswith(".."):
-        script += f"echo \"Running: python {script_path} ${{PARAMS[@]}}\" >&2\n"
-        script += f"python {script_path} ${{PARAMS[@]}}\n"
+        script += f"echo \"Running: python -u {script_path} ${{PARAMS[@]}}\" >&2\n"
+        script += f"python -u {script_path} ${{PARAMS[@]}}\n"
     else:
-        script += f"echo \"Running: python ../{script_path} ${{PARAMS[@]}}\" >&2\n"
-        script += f"python ../{script_path} ${{PARAMS[@]}}\n"
+        script += f"echo \"Running: python -u ../{script_path} ${{PARAMS[@]}}\" >&2\n"
+        script += f"python -u ../{script_path} ${{PARAMS[@]}}\n"
     script += "\n"
 
     # Exit with script's exit code

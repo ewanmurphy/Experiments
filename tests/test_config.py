@@ -115,6 +115,56 @@ class TestExpandRange:
         assert result[-1] == 1000
         assert result[50] == 500  # Middle value should be midpoint
 
+    def test_log_scale_basic(self):
+        """Should generate logarithmically-spaced values."""
+        result = expand_range(1, 1000, 4, scale="log")
+        assert len(result) == 4
+        assert abs(result[0] - 1.0) < 1e-9
+        assert abs(result[-1] - 1000.0) < 1e-9
+        # For log scale 1 to 1000 with 4 points: 1, 10, 100, 1000
+        assert abs(result[1] - 10.0) < 1e-9
+        assert abs(result[2] - 100.0) < 1e-9
+
+    def test_log_scale_various_ranges(self):
+        """Should handle different log ranges."""
+        result = expand_range(10, 10000, 3, scale="log")
+        assert len(result) == 3
+        assert abs(result[0] - 10.0) < 1e-9
+        assert abs(result[-1] - 10000.0) < 1e-9
+        # Geometric mean: sqrt(10 * 10000) ≈ 316.23
+        assert abs(result[1] - 316.22776601683796) < 1e-6
+
+    def test_log_scale_invalid_scale_raises_error(self):
+        """Should raise ValueError for invalid scale."""
+        with pytest.raises(ValueError, match="scale must be 'linear' or 'log'"):
+            expand_range(1, 100, 5, scale="exponential")
+
+    def test_log_scale_negative_start_raises_error(self):
+        """Should raise ValueError for negative start with log scale."""
+        with pytest.raises(ValueError, match="start and end must be positive"):
+            expand_range(-10, 100, 5, scale="log")
+
+    def test_log_scale_negative_end_raises_error(self):
+        """Should raise ValueError for negative end with log scale."""
+        with pytest.raises(ValueError, match="start and end must be positive"):
+            expand_range(1, -100, 5, scale="log")
+
+    def test_log_scale_zero_start_raises_error(self):
+        """Should raise ValueError for zero start with log scale."""
+        with pytest.raises(ValueError, match="start and end must be positive"):
+            expand_range(0, 100, 5, scale="log")
+
+    def test_log_scale_single_division(self):
+        """Should handle single division with log scale."""
+        result = expand_range(10, 10, 1, scale="log")
+        assert result == [10]
+
+    def test_linear_scale_explicit(self):
+        """Should handle explicit linear scale (backwards compatible)."""
+        result_linear = expand_range(10, 100, 5, scale="linear")
+        result_default = expand_range(10, 100, 5)
+        assert result_linear == result_default
+
 
 class TestExpandParameterValue:
     """Tests for expand_parameter_value() function."""
@@ -167,6 +217,24 @@ class TestExpandParameterValue:
         spec = {"start": 0, "end": 100, "divisions": "five"}
         with pytest.raises(ValueError, match="Invalid range specification"):
             expand_parameter_value(spec)
+
+    def test_expand_range_spec_with_log_scale(self):
+        """Should expand range spec with logarithmic scale."""
+        spec = {"start": 1, "end": 1000, "divisions": 4, "scale": "log"}
+        result = expand_parameter_value(spec)
+        assert len(result) == 4
+        assert abs(result[0] - 1.0) < 1e-9
+        assert abs(result[-1] - 1000.0) < 1e-9
+        assert abs(result[1] - 10.0) < 1e-9
+        assert abs(result[2] - 100.0) < 1e-9
+
+    def test_expand_range_spec_with_linear_scale_explicit(self):
+        """Should expand range spec with explicit linear scale."""
+        spec_explicit = {"start": 0, "end": 100, "divisions": 5, "scale": "linear"}
+        spec_implicit = {"start": 0, "end": 100, "divisions": 5}
+        result_explicit = expand_parameter_value(spec_explicit)
+        result_implicit = expand_parameter_value(spec_implicit)
+        assert result_explicit == result_implicit == [0, 25, 50, 75, 100]
 
 
 class TestGenerateCsvFromYaml:

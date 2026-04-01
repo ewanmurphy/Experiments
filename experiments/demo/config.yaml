@@ -1,0 +1,10 @@
+# Bundled demo experiment.
+# Try:
+#   experiment run demo --show-params
+#   experiment run demo --parallel 2 --show-params
+
+script: run.py
+post_process_script: postprocess.py
+learning_rate: {start: 0.001, end: 0.01, divisions: 3}
+batch_size: [16, 32]
+epochs: 5

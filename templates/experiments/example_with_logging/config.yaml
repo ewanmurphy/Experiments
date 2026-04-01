@@ -1,0 +1,11 @@
+# Example experiment configuration with logging
+
+experiment:
+  name: "example_with_logging"
+  script: "run.py"
+
+parameters:
+  learning_rate:
+    values: [0.001, 0.01, 0.1]
+  batch_size:
+    values: [32, 64]

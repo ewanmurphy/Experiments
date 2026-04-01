@@ -15,6 +15,7 @@ def is_range_spec(value: Any) -> bool:
     """Check if value is a range specification dict.
 
     A range spec must be a dict with 'start', 'end', and 'divisions' keys.
+    Optional key: 'scale' ("linear" or "log", default "linear").
 
     Args:
         value: Value to check
@@ -27,33 +28,53 @@ def is_range_spec(value: Any) -> bool:
     return "start" in value and "end" in value and "divisions" in value
 
 
-def expand_range(start: float, end: float, divisions: int) -> List[Any]:
+def expand_range(start: float, end: float, divisions: int, scale: str = "linear") -> List[Any]:
     """Generate evenly-spaced points from start to end (inclusive).
 
-    Generates a list of evenly-spaced numeric values. If all generated values
-    are whole numbers (within floating point precision), returns integers.
-    Otherwise returns floats.
+    Generates a list of numeric values. If all generated values are whole numbers
+    (within floating point precision), returns integers. Otherwise returns floats.
+
+    Supports two scales:
+    - "linear": Linearly spaced points (default)
+    - "log": Logarithmically spaced points (evenly spaced on a log plot)
 
     Args:
         start: Starting value
         end: Ending value (inclusive)
         divisions: Number of points to generate
+        scale: Scale type - "linear" or "log" (default: "linear")
 
     Returns:
         List of values (int or float), as integers if all values are whole numbers
 
     Raises:
-        ValueError: If divisions < 1
+        ValueError: If divisions < 1, scale is invalid, or log scale with non-positive values
     """
+    import math
+
     if divisions < 1:
         raise ValueError(f"divisions must be >= 1, got {divisions}")
+
+    if scale not in ("linear", "log"):
+        raise ValueError(f"scale must be 'linear' or 'log', got {scale}")
+
+    if scale == "log":
+        if start <= 0 or end <= 0:
+            raise ValueError(f"For log scale, start and end must be positive, got start={start}, end={end}")
 
     if divisions == 1:
         return [start]
 
-    # Generate evenly-spaced values
-    step = (end - start) / (divisions - 1)
-    values = [start + i * step for i in range(divisions)]
+    if scale == "linear":
+        # Generate linearly-spaced values
+        step = (end - start) / (divisions - 1)
+        values = [start + i * step for i in range(divisions)]
+    else:  # scale == "log"
+        # Generate logarithmically-spaced values (evenly spaced on log scale)
+        log_start = math.log10(start)
+        log_end = math.log10(end)
+        log_step = (log_end - log_start) / (divisions - 1)
+        values = [10 ** (log_start + i * log_step) for i in range(divisions)]
 
     # Convert to integers if all values are whole numbers (within floating point tolerance)
     if all(abs(v - round(v)) < 1e-9 for v in values):
@@ -66,7 +87,8 @@ def expand_parameter_value(value: Any) -> List[Any]:
     """Expand a parameter value to a list.
 
     Handles:
-    - Range specs: {start: a, end: b, divisions: n} → expanded list of evenly-spaced values
+    - Range specs: {start: a, end: b, divisions: n} → expanded list of values
+      Optional key: scale ("linear" or "log", default "linear")
     - Lists: returned as-is
     - Scalars: wrapped in single-item list
 
@@ -85,10 +107,11 @@ def expand_parameter_value(value: Any) -> List[Any]:
             start = float(value["start"])
             end = float(value["end"])
             divisions = int(value["divisions"])
+            scale = value.get("scale", "linear")
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid range specification: {e}")
 
-        return expand_range(start, end, divisions)
+        return expand_range(start, end, divisions, scale)
     elif isinstance(value, list):
         return value
     else:

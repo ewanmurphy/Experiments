@@ -1,0 +1,13 @@
+script: test_script.py
+
+# Example: Linear range (default)
+learning_rate_linear: {start: 0.001, end: 0.1, divisions: 5}
+
+# Example: Logarithmic range - useful for wide parameter ranges
+# This generates values evenly spaced on a log plot
+learning_rate_log: {start: 0.0001, end: 1.0, divisions: 5, scale: log}
+
+# Example with batch sizes - useful for exploring wide ranges
+batch_size: {start: 8, end: 512, divisions: 4, scale: log}
+
+# post_process_script: postprocess.py
