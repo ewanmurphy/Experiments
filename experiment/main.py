@@ -1428,12 +1428,6 @@ def cluster_limits(
 
 
 @app.command()
-def hello(name: str) -> None:
-    """Say hello to NAME."""
-    typer.echo(f"Hello, {name}!")
-
-
-@app.command()
 def status() -> None:
     """Show status of running experiments."""
     typer.echo("No experiments running.")
