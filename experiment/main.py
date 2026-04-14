@@ -233,8 +233,8 @@ def _run_experiment_worker(args: Tuple) -> Tuple[int, int, dict]:
     return (exp_index, exit_code, params)
 
 
-@app.command()
-def run(
+@app.command(name="local-run")
+def run_local(
     experiment_name: Optional[str] = typer.Argument(None, help="Name of the experiment (optional, will prompt if not provided)"),
     param: Optional[List[str]] = typer.Option(
         None, "--param", "-p", help="Parameter override (key=value)"
@@ -1425,12 +1425,6 @@ def cluster_limits(
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
-
-
-@app.command()
-def status() -> None:
-    """Show status of running experiments."""
-    typer.echo("No experiments running.")
 
 
 def version_callback(value: bool) -> None:

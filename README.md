@@ -52,7 +52,7 @@ pip install -e .
 The repository includes one runnable example in `experiments/demo/`.
 
 ```bash
-experiment run demo --show-params
+experiment local-run demo --show-params
 ```
 
 That creates a timestamped run directory under `experiments/demo/` with:
@@ -113,19 +113,19 @@ if __name__ == '__main__':
 
 ```bash
 # Interactive selection
-experiment run
+experiment local-run
 
 # Run specific experiment
-experiment run my_experiment
+experiment local-run my_experiment
 
 # Show parameters with real-time progress
-experiment run my_experiment --show-params
+experiment local-run my_experiment --show-params
 
 # Use parallel workers
-experiment run my_experiment --parallel 4
+experiment local-run my_experiment --parallel 4
 
 # Override parameters
-experiment run my_experiment --param learning_rate=0.05
+experiment local-run my_experiment --param learning_rate=0.05
 ```
 
 ## Usage
@@ -133,7 +133,7 @@ experiment run my_experiment --param learning_rate=0.05
 ### Local Execution
 
 ```
-experiment run [EXPERIMENT_NAME] [OPTIONS]
+experiment local-run [EXPERIMENT_NAME] [OPTIONS]
 
 Options:
   --param TEXT                    Parameter override (key=value)
